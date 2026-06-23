@@ -10,7 +10,7 @@ const ROOT = process.cwd();
 const TMP_DIR = path.join(ROOT, "tmp");
 const MAXMIND_DIR = path.join(TMP_DIR, "maxmind");
 const BUILD_DIR = path.join(TMP_DIR, "geoip-output");
-const PUBLIC_DIR = path.join(ROOT, "public", "geoip");
+const MANIFEST_PATH = path.join(BUILD_DIR, "manifest.json");
 
 const ARCHIVE_PATH = path.join(TMP_DIR, "GeoLite2-Country.tar.gz");
 const MMDB_PATH = path.join(TMP_DIR, "GeoLite2-Country.mmdb");
@@ -165,22 +165,8 @@ async function sha256(filePath) {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
 
-async function copyGeneratedFilesToPublic() {
-  await fs.mkdir(PUBLIC_DIR, { recursive: true });
-
-  const files = await fs.readdir(BUILD_DIR);
-  const datFiles = files.filter(file => file.toLowerCase().endsWith(".dat"));
-
-  for (const file of datFiles) {
-    await fs.copyFile(
-      path.join(BUILD_DIR, file),
-      path.join(PUBLIC_DIR, file),
-    );
-  }
-}
-
 async function buildManifest() {
-  const files = await fs.readdir(PUBLIC_DIR);
+  const files = await fs.readdir(BUILD_DIR);
   const datFiles = files.filter(file => file.toLowerCase().endsWith(".dat"));
 
   const manifest = {
@@ -194,7 +180,7 @@ async function buildManifest() {
   };
 
   for (const file of datFiles) {
-    const filePath = path.join(PUBLIC_DIR, file);
+    const filePath = path.join(BUILD_DIR, file);
     const stat = await fs.stat(filePath);
     const name = path.basename(file, ".dat").toLowerCase();
 
@@ -202,7 +188,6 @@ async function buildManifest() {
       file,
       bytes: stat.size,
       sha256: await sha256(filePath),
-      url: `/geoip/${file}`,
     };
 
     if (file === "geoip.dat") {
@@ -211,26 +196,18 @@ async function buildManifest() {
     }
 
     if (/^[a-z]{2}$/.test(name)) {
-      manifest.countries[name] = {
-        ...info,
-        apiDownloadUrl: `/api/geoip/${name}/download`,
-      };
+      manifest.countries[name] = info;
     }
   }
 
-  await fs.writeFile(
-    path.join(PUBLIC_DIR, "manifest.json"),
-    JSON.stringify(manifest, null, 2),
-  );
+  await fs.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
 
   return manifest;
 }
-
 async function main() {
   validateCountries(wantedCountries);
 
   await fs.mkdir(TMP_DIR, { recursive: true });
-  await fs.mkdir(PUBLIC_DIR, { recursive: true });
 
   await ensureMaxMindDatabase();
 
@@ -279,7 +256,6 @@ async function main() {
   console.log("Generating GeoIP .dat files from MaxMind MMDB...");
   await run("geoip", ["-c", toConfigPath(configPath)]);
 
-  await copyGeneratedFilesToPublic();
 
   const manifest = await buildManifest();
 

@@ -2,13 +2,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { uploadGeoipFilesToR2 } from "./r2UploadService.js";
 
 const ROOT = process.cwd();
-const PUBLIC_DIR = path.join(ROOT, "public", "geoip");
+const BUILD_DIR = path.join(ROOT, "tmp", "geoip-output");
+const STATE_DIR = path.join(ROOT, "tmp", "geoip-state");
 
-const MANIFEST_PATH = path.join(PUBLIC_DIR, "manifest.json");
-const STATUS_PATH = path.join(PUBLIC_DIR, "update-status.json");
-const HISTORY_PATH = path.join(PUBLIC_DIR, "update-history.json");
+const MANIFEST_PATH = path.join(BUILD_DIR, "manifest.json");
+const STATUS_PATH = path.join(STATE_DIR, "update-status.json");
+const CURRENT_MANIFEST_PATH = path.join(STATE_DIR, "current-manifest.json");
+
+let activeUpdatePromise = null;
 
 function getConfiguredCountries() {
   const raw = process.env.GEOIP_COUNTRIES || "ru,cn,ir,ua,ae";
@@ -100,13 +104,6 @@ function createClientDownloads(manifest) {
   return downloads;
 }
 
-async function appendHistory(entry) {
-  const history = await readJson(HISTORY_PATH, []);
-  history.unshift(entry);
-
-  await writeJson(HISTORY_PATH, history.slice(0, 10));
-}
-
 async function writeStatus(statusData) {
   const previous = await readJson(STATUS_PATH, {});
 
@@ -115,8 +112,7 @@ async function writeStatus(statusData) {
     ...statusData,
   });
 }
-
-export async function runGeoipUpdate({ triggeredBy = "manual" } = {}) {
+async function runGeoipUpdateInternal({ triggeredBy = "manual" } = {}) {
   const startedAt = new Date().toISOString();
   const countries = getConfiguredCountries();
 
@@ -138,7 +134,6 @@ export async function runGeoipUpdate({ triggeredBy = "manual" } = {}) {
 
     const finishedAt = new Date().toISOString();
     const buildId = createBuildId(manifest);
-    const clientDownloads = createClientDownloads(manifest);
 
     const enrichedManifest = {
       schemaVersion: 1,
@@ -160,11 +155,21 @@ export async function runGeoipUpdate({ triggeredBy = "manual" } = {}) {
       client: {
         manifestUrl: "/geoip/manifest.json",
         downloadBaseUrl: "/geoip",
-        downloads: clientDownloads,
+        downloads: createClientDownloads(manifest),
       },
     };
 
     await writeJson(MANIFEST_PATH, enrichedManifest);
+
+    let r2Upload = null;
+
+    if (process.env.R2_UPLOAD_ENABLED === "true") {
+      r2Upload = await uploadGeoipFilesToR2();
+    }
+
+    const finalManifest = r2Upload ? r2Upload.manifest : enrichedManifest;
+
+    await writeJson(CURRENT_MANIFEST_PATH, finalManifest);
 
     const status = {
       status: "success",
@@ -173,21 +178,17 @@ export async function runGeoipUpdate({ triggeredBy = "manual" } = {}) {
       triggeredBy,
       buildId,
       countries,
-      manifestUrl: "/geoip/manifest.json",
-      downloads: clientDownloads,
+      manifestUrl: finalManifest.client.manifestUrl,
+      storage: finalManifest.storage,
+      downloads: finalManifest.client.downloads,
     };
 
     await writeStatus(status);
 
-    await appendHistory({
-      ...status,
-      finishedAt,
-    });
-
     console.log("GeoIP update finished.");
     console.log(JSON.stringify(status, null, 2));
 
-    return enrichedManifest;
+    return finalManifest;
   } catch (error) {
     const failedAt = new Date().toISOString();
 
@@ -202,11 +203,21 @@ export async function runGeoipUpdate({ triggeredBy = "manual" } = {}) {
 
     await writeStatus(status);
 
-    await appendHistory({
-      ...status,
-      failedAt,
-    });
-
     throw error;
+  }
+}
+
+export async function runGeoipUpdate(options = {}) {
+  if (activeUpdatePromise) {
+    console.log("GeoIP update already running. Reusing active update.");
+    return activeUpdatePromise;
+  }
+
+  activeUpdatePromise = runGeoipUpdateInternal(options);
+
+  try {
+    return await activeUpdatePromise;
+  } finally {
+    activeUpdatePromise = null;
   }
 }
