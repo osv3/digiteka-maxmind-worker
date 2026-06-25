@@ -1,0 +1,24 @@
+{
+  "Name": "digiteka-maxmind-worker-tue-fri",
+  "Description": "Tue/Fri 10:00 UTC: rebuild GeoIP .dat files from MaxMind and upload to R2",
+  "ScheduleExpression": "cron(0 10 ? * TUE,FRI *)",
+  "ScheduleExpressionTimezone": "UTC",
+  "FlexibleTimeWindow": { "Mode": "OFF" },
+  "State": "ENABLED",
+  "Target": {
+    "Arn": "arn:aws:ecs:eu-central-1:114930026703:cluster/digiteka-maxmind-worker",
+    "RoleArn": "arn:aws:iam::114930026703:role/digiteka-maxmind-worker-scheduler",
+    "EcsParameters": {
+      "TaskDefinitionArn": "arn:aws:ecs:eu-central-1:114930026703:task-definition/digiteka-maxmind-worker",
+      "TaskCount": 1,
+      "LaunchType": "FARGATE",
+      "NetworkConfiguration": {
+        "awsvpcConfiguration": {
+          "Subnets": ["subnet-005a7300cd0459612", "subnet-0c012490cb0911cbd"],
+          "SecurityGroups": ["sg-0a8be3847f9eb90e9"],
+          "AssignPublicIp": "ENABLED"
+        }
+      }
+    }
+  }
+}

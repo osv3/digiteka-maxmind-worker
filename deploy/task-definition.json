@@ -1,0 +1,41 @@
+{
+  "family": "digiteka-maxmind-worker",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::114930026703:role/digiteka-maxmind-worker-exec",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "geoip-worker",
+      "image": "114930026703.dkr.ecr.eu-central-1.amazonaws.com/digiteka-maxmind-worker:latest",
+      "essential": true,
+      "environment": [
+        { "name": "R2_UPLOAD_ENABLED", "value": "true" },
+        { "name": "GEOIP_TRIGGERED_BY", "value": "scheduled" },
+        { "name": "R2_BUCKET", "value": "geoip-files" },
+        { "name": "R2_PUBLIC_BASE_URL", "value": "https://files.octoh.link" },
+        { "name": "GEOIP_COUNTRIES", "value": "ae,cn,ir,lt,ru,ua" }
+      ],
+      "secrets": [
+        { "name": "MAXMIND_ACCOUNT_ID", "valueFrom": "arn:aws:ssm:eu-central-1:114930026703:parameter/digiteka-maxmind-worker/MAXMIND_ACCOUNT_ID" },
+        { "name": "MAXMIND_LICENSE_KEY", "valueFrom": "arn:aws:ssm:eu-central-1:114930026703:parameter/digiteka-maxmind-worker/MAXMIND_LICENSE_KEY" },
+        { "name": "R2_ACCOUNT_ID", "valueFrom": "arn:aws:ssm:eu-central-1:114930026703:parameter/digiteka-maxmind-worker/R2_ACCOUNT_ID" },
+        { "name": "R2_ACCESS_KEY_ID", "valueFrom": "arn:aws:ssm:eu-central-1:114930026703:parameter/digiteka-maxmind-worker/R2_ACCESS_KEY_ID" },
+        { "name": "R2_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:ssm:eu-central-1:114930026703:parameter/digiteka-maxmind-worker/R2_SECRET_ACCESS_KEY" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/digiteka-maxmind-worker",
+          "awslogs-region": "eu-central-1",
+          "awslogs-stream-prefix": "geoip"
+        }
+      }
+    }
+  ]
+}

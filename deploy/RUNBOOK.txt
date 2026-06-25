@@ -1,0 +1,138 @@
+================================================================================
+ DIGITEKA MAXMIND / GEOIP WORKER  -  OPERATIONS RUNBOOK
+================================================================================
+ Serverless: AWS ECS Fargate (scheduled task) + Amazon EventBridge Scheduler
+ Region : eu-central-1 (Frankfurt)
+ Account: 114930026703
+ Updated: 2026-06-25
+
+ WHAT THIS IS
+ ------------
+ A twice-weekly batch job. EventBridge Scheduler launches a one-shot Fargate
+ task (Tue/Fri 10:00 UTC). The container downloads the MaxMind GeoLite2-Country
+ DB, rebuilds the v2ray .dat files, uploads them to Cloudflare R2, then EXITS.
+ Nothing runs (or bills) between runs.
+
+ RESOURCES (all named "digiteka-maxmind-worker")
+ -----------------------------------------------
+ ECR repo        : digiteka-maxmind-worker
+ Image URI       : 114930026703.dkr.ecr.eu-central-1.amazonaws.com/digiteka-maxmind-worker:latest
+ ECS cluster     : digiteka-maxmind-worker
+ Task definition : digiteka-maxmind-worker   (family; latest revision is used)
+ Execution role  : digiteka-maxmind-worker-exec        (pull image, write logs, read secrets)
+ Scheduler role  : digiteka-maxmind-worker-scheduler   (launch the task)
+ Schedule        : digiteka-maxmind-worker-tue-fri
+ Log group       : /ecs/digiteka-maxmind-worker        (30-day retention)
+ Security group  : sg-0a8be3847f9eb90e9                (egress-only, no inbound)
+ Public subnets  : subnet-005a7300cd0459612, subnet-0c012490cb0911cbd
+ Secrets (SSM)   : /digiteka-maxmind-worker/MAXMIND_ACCOUNT_ID
+                   /digiteka-maxmind-worker/MAXMIND_LICENSE_KEY
+                   /digiteka-maxmind-worker/R2_ACCOUNT_ID
+                   /digiteka-maxmind-worker/R2_ACCESS_KEY_ID
+                   /digiteka-maxmind-worker/R2_SECRET_ACCESS_KEY
+
+ ALL commands assume: AWS CLI v2 configured for eu-central-1, run from the
+ project root (the folder with the Dockerfile and the deploy/ folder).
+
+ WINDOWS TIP: before viewing logs, run:  $env:PYTHONUTF8 = "1"
+ (the job prints checkmark emojis that otherwise crash the AWS CLI on Windows.)
+
+--------------------------------------------------------------------------------
+ 1) REDEPLOY NEW CODE  (after editing any .js or the Dockerfile)
+--------------------------------------------------------------------------------
+ Rebuild + push. The next run (scheduled or manual) auto-pulls :latest.
+
+   docker build -t digiteka-maxmind-worker:local .
+
+   aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin 114930026703.dkr.ecr.eu-central-1.amazonaws.com
+
+   docker tag digiteka-maxmind-worker:local 114930026703.dkr.ecr.eu-central-1.amazonaws.com/digiteka-maxmind-worker:latest
+
+   docker push 114930026703.dkr.ecr.eu-central-1.amazonaws.com/digiteka-maxmind-worker:latest
+
+ (Optional safer practice: also push a dated tag like :2026-06-25 so you can roll back.)
+
+--------------------------------------------------------------------------------
+ 2) CHANGE THE SCHEDULE (cron)
+--------------------------------------------------------------------------------
+ Edit deploy/schedule.json -> "ScheduleExpression". EventBridge cron has 6
+ fields: cron(minute hour day-of-month month day-of-week year). Use ? for the
+ day field you are NOT constraining, and weekday NAMES to avoid numbering bugs.
+
+   Tue & Fri 10:00         ->  cron(0 10 ? * TUE,FRI *)
+   Every day 06:30         ->  cron(30 6 ? * * *)
+   1st of each month 00:00 ->  cron(0 0 1 * ? *)
+
+ Optionally change "ScheduleExpressionTimezone" (e.g. "Europe/Berlin").
+ Apply the change:
+
+   aws scheduler update-schedule --cli-input-json file://deploy/schedule.json --region eu-central-1
+
+ NOTE: update-schedule REPLACES the whole schedule, so keep deploy/schedule.json
+ as your source of truth and always edit it, then run the command above.
+
+--------------------------------------------------------------------------------
+ 3) CHANGE WHICH COUNTRIES ARE BUILT
+--------------------------------------------------------------------------------
+ Edit deploy/task-definition.json -> environment -> GEOIP_COUNTRIES
+ (comma-separated 2-letter codes, e.g. "ae,cn,ir,lt,ru,ua,us"). Register a new
+ revision (the schedule uses the latest revision automatically):
+
+   aws ecs register-task-definition --cli-input-json file://deploy/task-definition.json --region eu-central-1
+
+--------------------------------------------------------------------------------
+ 4) ROTATE / CHANGE A SECRET (MaxMind or R2 keys)
+--------------------------------------------------------------------------------
+ No redeploy needed - secrets are read fresh at the start of every run.
+
+   aws ssm put-parameter --name "/digiteka-maxmind-worker/R2_SECRET_ACCESS_KEY" --value "NEW_VALUE" --type SecureString --overwrite --region eu-central-1
+
+ (Swap the --name for whichever key you are rotating.)
+
+--------------------------------------------------------------------------------
+ 5) RUN IT RIGHT NOW  (manual, on-demand)
+--------------------------------------------------------------------------------
+   aws ecs run-task --cluster digiteka-maxmind-worker --task-definition digiteka-maxmind-worker --launch-type FARGATE --count 1 --network-configuration file://deploy/network-config.json --region eu-central-1
+
+--------------------------------------------------------------------------------
+ 6) VIEW LOGS
+--------------------------------------------------------------------------------
+   $env:PYTHONUTF8 = "1"
+   aws logs tail /ecs/digiteka-maxmind-worker --region eu-central-1 --since 3h
+
+ Add --follow to stream live. Each run = one log stream: geoip/geoip-worker/<task-id>
+
+--------------------------------------------------------------------------------
+ 7) PAUSE / RESUME THE SCHEDULE
+--------------------------------------------------------------------------------
+ Edit deploy/schedule.json -> "State": "DISABLED" (or "ENABLED"), then:
+
+   aws scheduler update-schedule --cli-input-json file://deploy/schedule.json --region eu-central-1
+
+--------------------------------------------------------------------------------
+ 8) CHECK STATUS
+--------------------------------------------------------------------------------
+   aws scheduler get-schedule --name digiteka-maxmind-worker-tue-fri --region eu-central-1
+   aws ecs list-tasks --cluster digiteka-maxmind-worker --region eu-central-1 --desired-status STOPPED
+
+ The live result is always in the manifest:
+   https://files.octoh.link/manifest.json   (check lastSuccessAt / buildId)
+
+--------------------------------------------------------------------------------
+ 9) FULL TEARDOWN  (delete everything we created; run top-to-bottom)
+--------------------------------------------------------------------------------
+   aws scheduler delete-schedule --name digiteka-maxmind-worker-tue-fri --region eu-central-1
+   aws iam delete-role-policy --role-name digiteka-maxmind-worker-scheduler --policy-name run-geoip-task
+   aws iam delete-role --role-name digiteka-maxmind-worker-scheduler
+   aws ecs delete-cluster --cluster digiteka-maxmind-worker --region eu-central-1
+   aws logs delete-log-group --log-group-name /ecs/digiteka-maxmind-worker --region eu-central-1
+   aws iam delete-role-policy --role-name digiteka-maxmind-worker-exec --policy-name ssm-secrets-read
+   aws iam detach-role-policy --role-name digiteka-maxmind-worker-exec --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+   aws iam delete-role --role-name digiteka-maxmind-worker-exec
+   aws ssm delete-parameters --names "/digiteka-maxmind-worker/MAXMIND_ACCOUNT_ID" "/digiteka-maxmind-worker/MAXMIND_LICENSE_KEY" "/digiteka-maxmind-worker/R2_ACCOUNT_ID" "/digiteka-maxmind-worker/R2_ACCESS_KEY_ID" "/digiteka-maxmind-worker/R2_SECRET_ACCESS_KEY" --region eu-central-1
+   aws ec2 delete-security-group --group-id sg-0a8be3847f9eb90e9 --region eu-central-1
+   aws ecr delete-repository --repository-name digiteka-maxmind-worker --force --region eu-central-1
+
+ (Inactive task-definition revisions cost nothing; leave them or deregister with
+  aws ecs deregister-task-definition --task-definition digiteka-maxmind-worker:<n>)
+================================================================================

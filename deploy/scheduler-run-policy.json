@@ -1,0 +1,21 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunGeoipTask",
+      "Effect": "Allow",
+      "Action": "ecs:RunTask",
+      "Resource": "arn:aws:ecs:eu-central-1:114930026703:task-definition/digiteka-maxmind-worker:*",
+      "Condition": {
+        "ArnLike": { "ecs:cluster": "arn:aws:ecs:eu-central-1:114930026703:cluster/digiteka-maxmind-worker" }
+      }
+    },
+    {
+      "Sid": "PassExecutionRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::114930026703:role/digiteka-maxmind-worker-exec",
+      "Condition": { "StringEquals": { "iam:PassedToService": "ecs-tasks.amazonaws.com" } }
+    }
+  ]
+}
